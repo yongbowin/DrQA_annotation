@@ -19,6 +19,9 @@ from sklearn.utils import murmurhash3_32
 
 
 def save_sparse_csr(filename, matrix, metadata=None):
+    """
+    'matrix' is tfidf matrix
+    """
     data = {
         'data': matrix.data,
         'indices': matrix.indices,

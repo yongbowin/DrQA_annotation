@@ -90,13 +90,13 @@ def get_count_matrix(args, db, db_opts):
     """
     # Map doc_ids to indexes
     global DOC2IDX
-    db_class = retriever.get_class(db)
+    db_class = retriever.get_class(db)  # drqa/retriever/__init__.py --> doc_db.py
     with db_class(**db_opts) as doc_db:
-        doc_ids = doc_db.get_doc_ids()
-    DOC2IDX = {doc_id: i for i, doc_id in enumerate(doc_ids)}
+        doc_ids = doc_db.get_doc_ids()  # Fetch all ids of docs stored in the db.
+    DOC2IDX = {doc_id: i for i, doc_id in enumerate(doc_ids)}  # store in {'3255': 0, '8902': 1, ...}
 
     # Setup worker pool
-    tok_class = tokenizers.get_class(args.tokenizer)
+    tok_class = tokenizers.get_class(args.tokenizer)  # 'corenlp', drqa/tokenizers/__init__.py --> corenlp_tokenizer.py
     workers = ProcessPool(
         args.num_workers,
         initializer=init,
@@ -107,8 +107,8 @@ def get_count_matrix(args, db, db_opts):
     logger.info('Mapping...')
     row, col, data = [], [], []
     step = max(int(len(doc_ids) / 10), 1)
-    batches = [doc_ids[i:i + step] for i in range(0, len(doc_ids), step)]
-    _count = partial(count, args.ngram, args.hash_size)
+    batches = [doc_ids[i:i + step] for i in range(0, len(doc_ids), step)]  # total 10 batches
+    _count = partial(count, args.ngram, args.hash_size)  # args.hash_size --> default=int(math.pow(2, 24))
     for i, batch in enumerate(batches):
         logger.info('-' * 25 + 'Batch %d/%d' % (i + 1, len(batches)) + '-' * 25)
         for b_row, b_col, b_data in workers.imap_unordered(_count, batch):
@@ -119,7 +119,33 @@ def get_count_matrix(args, db, db_opts):
     workers.join()
 
     logger.info('Creating sparse matrix...')
-    count_matrix = sp.csr_matrix(
+    """
+    csr_matrix((data, (row_ind, col_ind)), [shape=(M, N)])
+            where ``data``, ``row_ind`` and ``col_ind`` satisfy the
+            relationship ``a[row_ind[k], col_ind[k]] = data[k]``.
+    
+    Examples:
+        >>> row = np.array([0, 0, 1, 2, 2, 2])
+        >>> col = np.array([0, 2, 2, 0, 1, 2])
+        >>> data = np.array([1, 2, 3, 4, 5, 6])
+        >>> csr_matrix((data, (row, col)), shape=(3, 3)).toarray()
+        array([[1, 0, 2],
+               [0, 0, 3],
+               [4, 5, 6]])
+    
+    count_matrix: shape=(args.hash_size, len(doc_ids))
+    
+              doc_1   doc_2  ...   doc_m
+    word_1    [[1,      0,   ...    2],
+    word_2     [0,      0,   ...    3],
+     ...                ...
+    word_n     [4,      5,   ...    6]]
+    
+    i.e., (word_1, doc_m) denotes word 'word_1' appear 2 times in doc 'doc_m'.
+    
+    Reference: https://towardsdatascience.com/machine-learning-to-big-data-scaling-inverted-indexing-with-solr-ba5b48833fb4
+    """
+    count_matrix = sp.csr_matrix(  # import scipy.sparse as sp
         (data, (row, col)), shape=(args.hash_size, len(doc_ids))
     )
     count_matrix.sum_duplicates()
@@ -140,17 +166,80 @@ def get_tfidf_matrix(cnts):
     * Nt = number of occurences of term in all documents
     """
     Ns = get_doc_freqs(cnts)
+    """
+    >>> idfs
+    array([-0.51082562,  0.51082562, -1.94591015])
+    >>> idfs[idfs < 0]=0
+    >>> idfs
+    array([0.        , 0.51082562, 0.        ])
+    >>> idfs = sp.diags(idfs, 0)
+    >>> idfs.toarray()
+    array([[0.        , 0.        , 0.        ],
+           [0.        , 0.51082562, 0.        ],
+           [0.        , 0.        , 0.        ]])
+    >>> aa.toarray()
+    array([[1, 0, 2],
+           [0, 0, 3],
+           [4, 5, 6]], dtype=int64)
+    >>> tfs = aa.log1p()
+    >>> tfs.toarray()
+    array([[0.69314718, 0.        , 1.09861229],
+           [0.        , 0.        , 1.38629436],
+           [1.60943791, 1.79175947, 1.94591015]])
+    >>> tfidfs = idfs.dot(tfs)
+    >>> tfidfs.toarray()
+    array([[0.        , 0.        , 0.        ],
+           [0.        , 0.        , 0.70815468],
+           [0.        , 0.        , 0.        ]])
+    """
     idfs = np.log((cnts.shape[1] - Ns + 0.5) / (Ns + 0.5))
     idfs[idfs < 0] = 0
     idfs = sp.diags(idfs, 0)
-    tfs = cnts.log1p()
+    tfs = cnts.log1p()  # Returns a new tensor with the natural log of (1 + x_i).
+    """
+    (args.hash_size, args.hash_size) .doc (args.hash_size, len(doc_ids)) = (args.hash_size, len(doc_ids))
+    """
     tfidfs = idfs.dot(tfs)
     return tfidfs
 
 
 def get_doc_freqs(cnts):
     """Return word --> # of docs it appears in."""
+
+    """Examples:
+    >>> aa=sp.csr_matrix((data, (row, col)), shape=(3, 3))
+    >>> aa
+    <3x3 sparse matrix of type '<class 'numpy.int64'>'
+            with 6 stored elements in Compressed Sparse Row format>
+    >>> aa.sum_duplicates()
+    >>> aa
+    <3x3 sparse matrix of type '<class 'numpy.int64'>'
+            with 6 stored elements in Compressed Sparse Row format>
+    >>> aa.toarray()
+    array([[1, 0, 2],
+           [0, 0, 3],
+           [4, 5, 6]], dtype=int64)
+    >>> (aa > 0).astype(int).toarray()
+    array([[1, 0, 1],
+           [0, 0, 1],
+           [1, 1, 1]])
+    >>> np.array((aa > 0).astype(int).sum(1))  # each row denotes each word.
+    array([[2],
+           [1],
+           [3]])
+    >>> np.array((aa > 0).astype(int).sum(1)).shape
+    (3, 1)
+    >>> np.array((aa > 0).astype(int).sum(1)).squeeze()
+    array([2, 1, 3])
+    >>> np.array((aa > 0).astype(int).sum(1)).squeeze().shape
+    (3,)
+    """
     binary = (cnts > 0).astype(int)
+    """
+    freqs: In all docs, the nums of docs which appear 'word_n'.
+            word_1  word_2  ...  word_n
+        array([2,     1,    ...,   3])
+    """
     freqs = np.array(binary.sum(1)).squeeze()
     return freqs
 
@@ -179,27 +268,34 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     logging.info('Counting words...')
+    # 1.Form a sparse word to document count matrix (inverted index).
     count_matrix, doc_dict = get_count_matrix(
         args, 'sqlite', {'db_path': args.db_path}
     )
 
+    # 2.Convert the word count matrix into tfidf one.
     logger.info('Making tfidf vectors...')
-    tfidf = get_tfidf_matrix(count_matrix)
+    tfidf = get_tfidf_matrix(count_matrix)  # the matrix with each element is a tfidf value.
 
+    # 3.Return word --> # of docs it appears in.
     logger.info('Getting word-doc frequencies...')
     freqs = get_doc_freqs(count_matrix)
 
+    # define filename
     basename = os.path.splitext(os.path.basename(args.db_path))[0]
     basename += ('-tfidf-ngram=%d-hash=%d-tokenizer=%s' %
-                 (args.ngram, args.hash_size, args.tokenizer))
+                 (args.ngram, args.hash_size, args.tokenizer))  # (default=2, default=int(math.pow(2, 24)), 'corenlp')
     filename = os.path.join(args.out_dir, basename)
 
     logger.info('Saving to %s.npz' % filename)
     metadata = {
-        'doc_freqs': freqs,
-        'tokenizer': args.tokenizer,
-        'hash_size': args.hash_size,
-        'ngram': args.ngram,
-        'doc_dict': doc_dict
+        'doc_freqs': freqs,  # for each word (or keyword), # of docs it appears in.
+        'tokenizer': args.tokenizer,  # 'corenlp'
+        'hash_size': args.hash_size,  # default=int(math.pow(2, 24))
+        'ngram': args.ngram,  # default=2
+        'doc_dict': doc_dict  # (DOC2IDX, doc_ids)
     }
+    """
+    drqa/retriever/__init__.py --> utils.py
+    """
     retriever.utils.save_sparse_csr(filename, tfidf, metadata)

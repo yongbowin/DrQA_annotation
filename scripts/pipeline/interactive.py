@@ -54,7 +54,7 @@ if args.candidate_file:
     candidates = set()
     with open(args.candidate_file) as f:
         for line in f:
-            line = utils.normalize(line.strip()).lower()
+            line = utils.normalize(line.strip()).lower()  # Resolve different type of unicode encodings
             candidates.add(line)
     logger.info('Loaded %d candidates.' % len(candidates))
 else:
@@ -62,7 +62,7 @@ else:
 
 logger.info('Initializing pipeline...')
 DrQA = pipeline.DrQA(
-    cuda=args.cuda,
+    cuda=args.cuda,  # bool
     fixed_candidates=candidates,
     reader_model=args.reader_model,
     ranker_config={'options': {'tfidf_path': args.retriever_model}},
